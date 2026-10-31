@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { fixture } from './fixtures/portal.js';
+import { fixture, sentFields } from './fixtures/portal.js';
 
 const LIST = 'task.commentitem.getlist';
 const ADD = 'task.commentitem.add';
@@ -35,15 +35,15 @@ for (const authMode of ['token', 'password']) {
       assert.equal(fields.TASKID, '42');
       assert.deepEqual(fields.ORDER, { ID: 'asc' });
 
-      if (fields.start === 0) {
+      if (Number(fields.start) === 0) {
         return Response.json({ result: [first], next: 3 });
       }
 
-      if (fields.start === 3) {
+      if (Number(fields.start) === 3) {
         return Response.json({ result: [first, { ID: '102' }], next: '19' });
       }
 
-      assert.equal(fields.start, 19);
+      assert.equal(Number(fields.start), 19);
 
       return Response.json({ result: [{ ...first, ID: '103' }] });
     } });
@@ -80,7 +80,7 @@ for (const authMode of ['token', 'password']) {
         attachments: [],
       }],
     });
-    assert.deepEqual(requests(calls, LIST).map(({ options }) => JSON.parse(options.body).start), [0, 3, 19]);
+    assert.deepEqual(requests(calls, LIST).map((call) => Number(sentFields(call).start)), [0, 3, 19]);
   });
 
   test(`${authMode}: пустое обсуждение завершает чтение одной страницей`, async (t) => {
@@ -97,7 +97,7 @@ for (const authMode of ['token', 'password']) {
     assert.deepEqual(await driver.addComment('42', text), { ok: true, commentId: 101 });
 
     const sent = requests(calls, ADD);
-    const body = JSON.parse(sent[0].options.body);
+    const body = sentFields(sent[0]);
 
     assert.equal(sent.length, 1);
     assert.equal(body.TASKID, '42');
@@ -136,11 +136,17 @@ for (const authMode of ['token', 'password']) {
       assert.deepEqual(await driver.updateTask('42', input), { ok: true, id: 42 });
 
       const sent = requests(calls, UPDATE);
-      const body = JSON.parse(sent[0].options.body);
+      const body = sentFields(sent[0]);
 
       assert.equal(sent.length, 1);
       assert.equal(body.taskId, '42');
-      assert.deepEqual(body.fields, expected);
+
+      const form = authMode === 'password'
+        ? Object.fromEntries(Object.entries(expected)
+          .map(([key, value]) => [key, value === null ? '' : String(value)]))
+        : expected;
+
+      assert.deepEqual(body.fields, form);
       assert.equal(requests(calls, 'tasks.task.get').length, 0);
     });
   }
@@ -222,7 +228,7 @@ for (const authMode of ['token', 'password']) {
 
     state.restError = 'ACCESS_DENIED';
     state.restDescription = authMode === 'token' ? 'Нет прав: fixture-token'
-      : 'Нет прав: fixture-password; csrf1; session1';
+      : 'Нет прав: fixture-password; csrf1x0; session1';
 
     await assert.rejects(driver.addComment('42', 'Текст'), (failure) => {
       assert.match(failure.message, /^Нет прав: \[скрыто\]/u);
@@ -270,8 +276,9 @@ test('Ротация сессии при добавлении обновляет
   assert.equal(sent.length, 2);
   assert.deepEqual(sent.map(({ options }) => options.headers.Cookie),
     ['PHPSESSID=session1', 'PHPSESSID=session2']);
-  assert.deepEqual(sent.map(({ options }) => JSON.parse(options.body).sessid), ['csrf1', 'csrf2']);
-  assert.deepEqual(sent.map(({ options }) => JSON.parse(options.body).FIELDS),
+  assert.deepEqual(sent.map(({ options }) => new URLSearchParams(options.body).get('sessid')),
+    ['csrf1x0', 'csrf2x0']);
+  assert.deepEqual(sent.map((call) => sentFields(call).FIELDS),
     [{ POST_MESSAGE: 'Текст после ротации' }, { POST_MESSAGE: 'Текст после ротации' }]);
 });
 

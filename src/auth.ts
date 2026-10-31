@@ -16,6 +16,13 @@ const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/12
 const CHALLENGE_MESSAGE = 'Требуется код/капча — войдите в портал и повторите';
 
 /**
+ * Коды отказа REST сообщают о проблеме сессии, а не самих данных.
+ * session_failed облачные порталы сопровождают новым токеном для повтора.
+ */
+const AUTH_ERRORS
+  = /^(NO_AUTH|NO_AUTH_FOUND|AUTH_ERROR|ERROR_SESSION_EXPIRED|SESSION_EXPIRED|INVALID_CSRF|INVALID_SESSID|session_failed)$/iu;
+
+/**
  * Форма с проверочным кодом требует участия человека и завершает подключение сразу.
  * Проверяем реальные поля формы и виджеты капчи до любого повторного входа.
  */
@@ -113,6 +120,7 @@ export class PasswordAuth {
   private readonly transport: typeof fetch;
   private readonly jar: CookieJar;
   private sessid: string | null = null;
+  private refererUrl: string | null = null;
 
   /**
    * Состояние принадлежит одному экземпляру и точному набору реквизитов.
@@ -171,6 +179,8 @@ export class PasswordAuth {
       throw new TrackerError('tracker_auth_error', 'Портал отклонил форму входа');
     }
 
+    this.refererUrl = response.url || this.refererUrl;
+
     const html = await response.text();
 
     assertNoChallenge(html);
@@ -179,17 +189,17 @@ export class PasswordAuth {
   }
 
   /**
-   * Анонимный sessid не подтверждает вход: форма пароля означает отказ авторизации.
-   * После ротации сохраняем только новый CSRF из страницы действующей сессии.
+   * Форма пароля означает отказ авторизации, установленные куки — действующую сессию.
+   * Облачные SPA-страницы не обязаны содержать bitrix_sessid: недостающий токен
+   * REST получает из отказа портала, поэтому null — допустимое состояние.
    */
   private acceptSession(html: string): boolean {
-    const token = html.match(/["']?bitrix_sessid["']?\s*[:=]\s*["']([a-z0-9]+)["']/iu)?.[1];
-
-    if (!token || /name\s*=\s*["']USER_PASSWORD["']/iu.test(html) || !this.jar.header()) {
+    if (/name\s*=\s*["']USER_PASSWORD["']/iu.test(html) || !this.jar.header()) {
       return false;
     }
 
-    this.sessid = token;
+    this.sessid = html.match(/["']?bitrix_sessid["']?\s*[:=]\s*["']([a-z0-9]+)["']/iu)?.[1]
+      ?? this.sessid;
     this.jar.persist();
 
     return true;
@@ -266,33 +276,76 @@ export class PasswordAuth {
   }
 
   /**
-   * REST получает сессионные куки и CSRF, а не токен другого режима.
-   * Один повтор разрешён только после явного отказа авторизации до выполнения операции.
+   * Плоская форма повторяет браузерный клиент: sessid первым параметром,
+   * вложенные поля — в квадратных скобках, значения — строками.
+   */
+  private formBody(fields: Record<string, unknown>): string {
+    const params = new URLSearchParams({ sessid: this.sessid ?? '' });
+
+    const flatten = (value: unknown, prefix: string): void => {
+      if (value === null || value === undefined) {
+        params.append(prefix, '');
+      } else if (Array.isArray(value)) {
+        value.forEach((child, index) => flatten(child, `${prefix}[${index}]`));
+      } else if (typeof value === 'object') {
+        for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+          flatten(child, `${prefix}[${key}]`);
+        }
+      } else {
+        params.append(prefix, String(value));
+      }
+    };
+
+    for (const [key, value] of Object.entries(fields)) {
+      flatten(value, key);
+    }
+
+    return params.toString();
+  }
+
+  /**
+   * REST повторяет браузерный транспорт: форма вместо JSON, X-Requested-With и Referer.
+   * Просроченный sessid облачный портал возвращает в отказе session_failed — повтор
+   * с новым токеном выполняется до перевхода, как в штатном rest.client.
    */
   async request(method: string, fields: Record<string, unknown>): Promise<Response> {
     await this.ensureSession();
 
-    for (let attempt = 0; ; attempt += 1) {
+    let reloginDone = false;
+    let sessidRetries = 0;
+
+    for (;;) {
       const response = await this.raw(`/rest/${method}`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-Bitrix-Csrf-Token': this.sessid ?? '',
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest',
+          Origin: this.credentials.origin,
+          Referer: this.refererUrl ?? `${this.credentials.origin}/`,
         },
-        body: JSON.stringify({ ...fields, sessid: this.sessid }),
+        body: this.formBody(fields),
       });
       const text = await response.clone().text();
 
       assertNoChallenge(text);
 
       const data: unknown = await response.clone().json().catch(() => null);
-      const authError = isRecord(data) && typeof data.error === 'string'
-        && /^(NO_AUTH|AUTH_ERROR|ERROR_SESSION_EXPIRED|SESSION_EXPIRED|INVALID_CSRF|INVALID_SESSID)$/iu
-          .test(data.error);
+      const error = isRecord(data) && typeof data.error === 'string' ? data.error : null;
       const loginPage = /name\s*=\s*["']USER_PASSWORD["']/iu.test(text);
+      const authCode = error !== null && AUTH_ERRORS.test(error);
       const portalError = isRecord(data) && (Boolean(data.error) || Boolean(data.error_description));
+      const freshSessid = isRecord(data) && typeof data.sessid === 'string' && data.sessid
+        ? data.sessid : null;
 
-      if (!authError && !loginPage && (response.status !== 401 || portalError)) {
+      if (freshSessid && (error === 'session_failed' || authCode) && sessidRetries < 2) {
+        this.sessid = freshSessid;
+        sessidRetries += 1;
+        await response.body?.cancel();
+
+        continue;
+      }
+
+      if (!authCode && !loginPage && (response.status !== 401 || portalError)) {
         this.jar.persist();
 
         return response;
@@ -300,7 +353,7 @@ export class PasswordAuth {
 
       await response.body?.cancel();
 
-      if (attempt > 0) {
+      if (reloginDone) {
         this.sessid = null;
         this.jar.clear();
         this.jar.persist();
@@ -308,6 +361,7 @@ export class PasswordAuth {
         throw new TrackerError('tracker_auth_error', 'Портал не подтвердил сессию после входа');
       }
 
+      reloginDone = true;
       await this.login();
     }
   }

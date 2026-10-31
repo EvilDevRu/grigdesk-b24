@@ -21,10 +21,13 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
    */
   function credentials() {
     const values = host.credentials.read();
+    // Адрес без схемы — это имя портала: https подставляется сам, а не требует человека.
+    const typed = String(values?.baseUrl ?? '').trim().replace(/\/+$/u, '');
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//iu.test(typed) ? typed : `https://${typed}`;
     let url: URL;
 
     try {
-      url = new URL(String(values?.baseUrl ?? ''));
+      url = new URL(withScheme);
     } catch {
       throw new TrackerError('tracker_unavailable', 'Укажите адрес портала');
     }

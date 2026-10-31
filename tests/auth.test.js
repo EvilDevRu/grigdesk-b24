@@ -172,3 +172,25 @@ test('Сетевой сбой REST не повторяет мутацию и с�
   });
   assert.equal(attempts, 1);
 });
+
+test('Облачная страница без sessid: REST получает токен из отказа и повторяет вызов', async (t) => {
+  const f = fixture(t, { cloudPage: true });
+
+  assert.deepEqual(await f.driver.testAuth(), { ok: true, userId: 7 });
+
+  const rest = f.calls.filter((call) => call.url.endsWith('/rest/user.current'));
+
+  assert.equal(rest.length, 2);
+  assert.equal(new URLSearchParams(rest[0].options.body).get('sessid'), '');
+  assert.equal(new URLSearchParams(rest[1].options.body).get('sessid'), f.state.csrf);
+  assert.equal(f.loginCalls().length, 1);
+});
+
+test('Адрес портала без схемы получает https автоматически', async (t) => {
+  const f = fixture(t);
+
+  f.change({ baseUrl: 'portal.fixture' });
+
+  assert.deepEqual(await f.driver.testAuth(), { ok: true, userId: 7 });
+  assert.equal(f.calls.every((call) => call.url.startsWith('https://portal.fixture')), true);
+});

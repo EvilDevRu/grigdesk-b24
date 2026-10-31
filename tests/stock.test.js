@@ -75,7 +75,7 @@ test('Пакет объявляет схему и только доступны�
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 
   assert.equal(manifest.id, driver.id);
-  assert.equal(manifest.version, '0.1.2');
+  assert.equal(manifest.version, '0.1.3');
   assert.equal(packageJson.version, manifest.version);
   assert.equal(manifest.contract, 1);
   assert.equal(manifest.settings.accessToken.secret, true);
