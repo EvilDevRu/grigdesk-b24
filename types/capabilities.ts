@@ -48,12 +48,23 @@ export type TrackerWidget = {
   periods: Partial<Record<'day' | 'week' | 'month', TrackerChartPeriod>>;
 };
 
-export interface TrackerSettingsField {
-  type: 'string' | 'boolean' | 'number';
+interface TrackerSettingsFieldBase {
   label?: TrackerLabel;
   secret?: boolean;
   required?: boolean;
 }
+
+export type TrackerSettingsField = TrackerSettingsFieldBase & ({
+  type: 'string' | 'number';
+  visibleIf?: { field: string; equals: string };
+} | {
+  type: 'boolean';
+  visibleIf?: never;
+} | {
+  type: 'select';
+  options: Array<{ value: string; label: TrackerLabel }>;
+  visibleIf?: never;
+});
 
 export type TrackerSettingsSchema = Record<string, TrackerSettingsField>;
 
@@ -67,6 +78,7 @@ export interface TrackerDescriptor {
   capabilities: TrackerCapabilities;
   schema: TrackerSettingsSchema;
   reason?: string;
+  deleted?: boolean;
 }
 
 export interface TrackerCatalog {

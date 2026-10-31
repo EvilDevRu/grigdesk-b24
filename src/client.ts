@@ -1,14 +1,18 @@
 import { NO_TRACKER_CAPABILITIES } from '../types/capabilities.ts';
-import { isRecord } from './objects.ts';
+import { PasswordAuth } from './auth.ts';
+import { comment } from './comments.ts';
+import { isRecord, redactSecrets } from './objects.ts';
 import { describeStatus } from './status.ts';
+import { taskUpdateFields } from './taskFields.ts';
 import { TrackerError } from '../types/contract.ts';
 import type { TaskData, TaskTracker, TrackerHost, TrackerIdentity } from '../types/contract.ts';
 
 /**
- * Облачный клиент выполняет только исходящий REST с токеном в теле POST.
- * Нет переноса токена при redirect, повторов мутаций и резервного HTML-протокола.
+ * REST использует явно выбранный токен либо самостоятельную сессию портала.
+ * Реквизиты другого режима не участвуют в запросах и кеше идентичности.
  */
 export function createStockTracker(host: TrackerHost, transport: typeof fetch = fetch): TaskTracker {
+  let passwordAuth: { signature: string; value: PasswordAuth } | null = null;
   let identity: { signature: string; value: TrackerIdentity } | null = null;
 
   /**
@@ -17,35 +21,82 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
    */
   function credentials() {
     const values = host.credentials.read();
-    const url = new URL(String(values?.baseUrl ?? ''));
+    let url: URL;
 
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
-      || url.pathname !== '/' || typeof values?.accessToken !== 'string' || !values.accessToken) {
-      throw new TrackerError('tracker_unavailable', 'Облачный трекер не настроен');
+    try {
+      url = new URL(String(values?.baseUrl ?? ''));
+    } catch {
+      throw new TrackerError('tracker_unavailable', 'Укажите адрес портала');
     }
 
-    return { origin: url.origin, accessToken: values.accessToken };
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
+      || url.pathname !== '/') {
+      throw new TrackerError('tracker_unavailable', 'Укажите HTTPS origin портала');
+    }
+
+    if (values?.authMode === 'token' && typeof values.accessToken === 'string'
+      && values.accessToken.trim()) {
+      return {
+        origin: url.origin,
+        authMode: 'token' as const,
+        accessToken: values.accessToken,
+      };
+    }
+
+    if (values?.authMode === 'password' && typeof values.login === 'string' && values.login.trim()
+      && typeof values.password === 'string' && values.password.trim()) {
+      return {
+        origin: url.origin,
+        authMode: 'password' as const,
+        login: values.login,
+        password: values.password,
+      };
+    }
+
+    throw new TrackerError('tracker_unavailable', 'Выберите способ подключения и заполните его реквизиты');
   }
 
   /**
-   * Внешний текст ошибки может содержать токен, поэтому наружу идут только наши сообщения.
+   * Текст ошибки портала сохраняется после удаления секретов выбранного режима.
    * Сетевой срок ограничен и тем же signal управляет транспорт фикстуры и настоящий fetch.
    */
   async function rest(method: string, fields: TaskData = {}): Promise<TaskData> {
-    const { origin, accessToken } = credentials();
+    const creds = credentials();
+    const signature = JSON.stringify(creds);
+
+    if (passwordAuth?.signature !== signature) {
+      passwordAuth = null;
+    }
+
+    if (creds.authMode === 'password' && !passwordAuth) {
+      passwordAuth = { signature, value: new PasswordAuth(creds, host.cookiePath, transport) };
+    }
+
+    const auth = passwordAuth?.value;
 
     try {
-      const response = await transport(`${origin}/rest/${method}`, {
-        method: 'POST',
-        redirect: 'error',
-        signal: AbortSignal.timeout(30_000),
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...fields, auth: accessToken }),
-      });
+      const response = creds.authMode === 'password'
+        ? await host.serial(() => auth!.request(method, fields))
+        : await transport(`${creds.origin}/rest/${method}`, {
+          method: 'POST',
+          redirect: 'error',
+          signal: AbortSignal.timeout(30_000),
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...fields, auth: creds.accessToken }),
+        });
       const body: unknown = await response.json();
 
-      if (isRecord(body) && body.error === 'TASK_NOT_FOUND') {
-        throw new TrackerError('task_not_found', 'Задача не найдена', 404);
+      if (isRecord(body) && (body.error || body.error_description)) {
+        const raw = typeof body.error_description === 'string' && body.error_description.trim()
+          ? body.error_description : String(body.error || 'Портал отклонил запрос');
+        const message = creds.authMode === 'password' ? auth!.redact(raw)
+          : redactSecrets(raw, [creds.accessToken]);
+        const missing = body.error === 'TASK_NOT_FOUND' || body.error === 'ERROR_TASK_NOT_FOUND';
+        const denied = /^(ACCESS_DENIED|ERROR_ACCESS_DENIED|insufficient_scope)$/iu.test(String(body.error))
+          || response.status === 403;
+
+        throw new TrackerError(missing ? 'task_not_found' : 'tracker_rest_error', message,
+          missing ? 404 : denied ? 403 : 502);
       }
 
       if (!response.ok || !isRecord(body) || body.error || !Object.hasOwn(body, 'result')) {
@@ -163,11 +214,91 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
     return [...rows.values()];
   }
 
+  /**
+   * Читает все страницы обсуждения по указателю next, не угадывая размер страницы портала.
+   * Ошибка выходит только через чтение обсуждения: основные данные карточки запрашиваются отдельно.
+   */
+  async function taskPageData(id: string): Promise<TaskData> {
+    const rows = new Map<number, TaskData>();
+    const visited = new Set<number>();
+    let start = 0;
+
+    do {
+      visited.add(start);
+
+      const response = await rest('task.commentitem.getlist', {
+        TASKID: id,
+        ORDER: { ID: 'asc' },
+        start,
+      });
+
+      if (!Array.isArray(response.result)) {
+        throw new TrackerError('tracker_rest_error', 'Портал не вернул список комментариев', 502);
+      }
+
+      for (const raw of response.result) {
+        const mapped = comment(raw);
+
+        rows.set(Number(mapped.mid), mapped);
+      }
+
+      if (response.next === undefined || response.next === null) {
+        break;
+      }
+
+      start = Number(response.next);
+
+      if (!Number.isSafeInteger(start) || start < 0 || visited.has(start)) {
+        throw new TrackerError('tracker_rest_error', 'Некорректная пагинация комментариев', 502);
+      }
+    } while (true);
+
+    return { attachments: [], comments: [...rows.values()] };
+  }
+
+  /**
+   * Отправляет только проверенные изменения; исходную задачу для слияния не перечитывает.
+   * Транспорт обновляет сессию, но не повторяет отказы прав и неопределённые сетевые сбои.
+   */
+  async function updateTask(id: string, input: unknown): Promise<TaskData> {
+    const fields = taskUpdateFields(input);
+
+    const response = await rest('tasks.task.update', { taskId: id, fields });
+
+    if (response.result !== true && (!isRecord(response.result) || !isRecord(response.result.task))) {
+      throw new TrackerError('tracker_rest_error', 'Портал не подтвердил изменение задачи', 502);
+    }
+
+    return { ok: true, id: Number(id) };
+  }
+
+  /**
+   * Пустой текст отклоняется до сети, а значимые пробелы и переносы сохраняются.
+   * Добавление использует общий REST-транспорт и возвращает номер нового комментария.
+   */
+  async function addComment(id: string, text: unknown): Promise<TaskData> {
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new TrackerError('tracker_bad_request', 'Пустой комментарий');
+    }
+
+    const response = await rest('task.commentitem.add', { TASKID: id, FIELDS: { POST_MESSAGE: text } });
+    const commentId = typeof response.result === 'string' || typeof response.result === 'number'
+      ? Number(response.result) : NaN;
+
+    if (!Number.isSafeInteger(commentId) || commentId <= 0) {
+      throw new TrackerError('tracker_rest_error', 'Портал не вернул номер комментария', 502);
+    }
+
+    return { ok: true, commentId };
+  }
+
   return {
     id: 'grigdesk-b24',
     capabilities: {
       ...NO_TRACKER_CAPABILITIES,
       create: true,
+      comments: true,
+      editing: true,
       complete: true,
       users: true,
       projects: true,
@@ -182,11 +313,15 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       }
     },
     accountIdentity,
+    taskPageData,
+    updateTask,
+    addComment,
     testAuth: async () => {
       try {
         return { ok: true, userId: Number((await accountIdentity()).userId) };
-      } catch {
-        return { ok: false, error: 'Не удалось проверить подключение облачного трекера' };
+      } catch (error) {
+        return { ok: false, error: error instanceof TrackerError
+          ? error.message : 'Не удалось проверить подключение облачного трекера' };
       }
     },
     listTasks: async () => list({ RESPONSIBLE_ID: (await accountIdentity()).userId }),

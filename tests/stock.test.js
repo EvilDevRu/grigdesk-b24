@@ -12,7 +12,11 @@ const TOKEN = 'секрет-только-в-теле';
  */
 function fixture({ error = null, baseUrl = 'https://cloud.fixture' } = {}) {
   const calls = [];
-  let values = { baseUrl, accessToken: TOKEN };
+  let values = {
+    baseUrl,
+    authMode: 'token',
+    accessToken: TOKEN,
+  };
   const driver = createDriver({
     credentials: { read: () => values },
     dataDir: '/fixture',
@@ -68,13 +72,18 @@ test('Пакет объявляет схему и только доступны�
   const manifest = JSON.parse(await readFile(new URL('../driver.json', import.meta.url), 'utf8'));
   const { driver } = fixture();
 
+  const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+
   assert.equal(manifest.id, driver.id);
+  assert.equal(manifest.version, '0.1.2');
+  assert.equal(packageJson.version, manifest.version);
   assert.equal(manifest.contract, 1);
   assert.equal(manifest.settings.accessToken.secret, true);
   assert.deepEqual(Object.keys(driver.capabilities).filter((key) => driver.capabilities[key]).sort(),
-    ['complete', 'create', 'projects', 'users']);
+    ['comments', 'complete', 'create', 'editing', 'projects', 'users']);
   assert.equal(driver.timer, undefined);
-  assert.equal(driver.addComment, undefined);
+  assert.equal(typeof driver.addComment, 'function');
+  assert.equal(typeof driver.updateTask, 'function');
 });
 
 test('REST преобразует dashboard, детали, создание, завершение и справочники', async () => {

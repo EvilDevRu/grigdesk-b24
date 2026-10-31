@@ -1,7 +1,7 @@
 {
   "id": "grigdesk-b24",
   "name": "Битрикс24 REST",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "contract": 1,
   "settings": {
     "baseUrl": {
@@ -11,12 +11,60 @@
         "key": "core.trackerPortal"
       }
     },
+    "authMode": {
+      "type": "select",
+      "required": true,
+      "label": {
+        "key": "core.trackerAuthMode"
+      },
+      "options": [
+        {
+          "value": "token",
+          "label": {
+            "key": "core.trackerAuthToken"
+          }
+        },
+        {
+          "value": "password",
+          "label": {
+            "key": "core.trackerAuthPassword"
+          }
+        }
+      ]
+    },
     "accessToken": {
       "type": "string",
       "secret": true,
       "required": true,
       "label": {
         "key": "core.trackerAccessToken"
+      },
+      "visibleIf": {
+        "field": "authMode",
+        "equals": "token"
+      }
+    },
+    "login": {
+      "type": "string",
+      "required": true,
+      "label": {
+        "key": "core.trackerLogin"
+      },
+      "visibleIf": {
+        "field": "authMode",
+        "equals": "password"
+      }
+    },
+    "password": {
+      "type": "string",
+      "secret": true,
+      "required": true,
+      "label": {
+        "key": "core.trackerPassword"
+      },
+      "visibleIf": {
+        "field": "authMode",
+        "equals": "password"
       }
     }
   }
