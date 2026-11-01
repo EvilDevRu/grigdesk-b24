@@ -9,6 +9,8 @@ const FIELD_NAMES: Record<string, string> = {
   deadline: 'DEADLINE',
   groupId: 'GROUP_ID',
   priority: 'PRIORITY',
+  accomplices: 'ACCOMPLICES',
+  auditors: 'AUDITORS',
 };
 
 /**
@@ -55,6 +57,28 @@ export function taskUpdateFields(input: unknown): TaskData {
 
     if (key === 'priority' && (value === null || value === '' || ![0, 1, 2].includes(Number(value)))) {
       throw new TrackerError('tracker_bad_request', 'Приоритет задачи должен быть 0, 1 или 2');
+    }
+
+    if (key === 'accomplices' || key === 'auditors') {
+      if (value === '' || value === null) {
+        normalized = '';
+      } else if (Array.isArray(value)) {
+        normalized = value.map((id) => {
+          if ((typeof id !== 'number' && typeof id !== 'string')
+            || (typeof id === 'string' && !/^\d+$/u.test(id))
+            || !Number.isSafeInteger(Number(id)) || Number(id) <= 0) {
+            throw new TrackerError('tracker_bad_request', 'Участники: нужны положительные id');
+          }
+
+          return Number(id);
+        });
+
+        if (!value.length) {
+          normalized = '';
+        }
+      } else {
+        throw new TrackerError('tracker_bad_request', 'Участники: нужен массив id, пустая строка или null');
+      }
     }
 
     fields[FIELD_NAMES[key]] = normalized;

@@ -75,12 +75,13 @@ test('Пакет объявляет схему и только доступны�
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 
   assert.equal(manifest.id, driver.id);
-  assert.equal(manifest.version, '0.1.5');
+  assert.equal(manifest.version, '0.1.6');
   assert.equal(packageJson.version, manifest.version);
   assert.equal(manifest.contract, 1);
   assert.equal(manifest.settings.accessToken.secret, true);
   assert.deepEqual(Object.keys(driver.capabilities).filter((key) => driver.capabilities[key]).sort(),
-    ['comments', 'complete', 'create', 'delete', 'editing', 'projects', 'timer', 'users']);
+    ['checklist', 'comments', 'complete', 'create', 'delete', 'editing',
+      'projects', 'renew', 'review', 'tags', 'timer', 'users']);
   assert.equal(typeof driver.timer, 'function');
   assert.equal(typeof driver.addComment, 'function');
   assert.equal(typeof driver.updateTask, 'function');

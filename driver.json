@@ -1,7 +1,7 @@
 {
   "id": "grigdesk-b24",
   "name": "Битрикс24 REST",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "contract": 1,
   "settings": {
     "baseUrl": {

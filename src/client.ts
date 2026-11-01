@@ -5,6 +5,7 @@ import { isRecord, redactSecrets } from './objects.ts';
 import { describeStatus } from './status.ts';
 import { taskUpdateFields } from './taskFields.ts';
 import { TrackerError } from '../types/contract.ts';
+import type { ChecklistItemInput, ChecklistItemUpdate } from '../types/contract.ts';
 import type { TaskData, TaskTracker, TrackerHost, TrackerIdentity } from '../types/contract.ts';
 
 // Только явный отказ нового модуля разрешает запасной способ завершения.
@@ -439,6 +440,80 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
     return { ok: true };
   }
 
+  /**
+   * Переход статуса считается успешным только по задаче в ответе нового модуля.
+   * Портальный отказ или прежний статус не подменяются локальным предположением.
+   */
+  async function transitionTask(id: string, action: string, status: number): Promise<TaskData> {
+    const response = await rest(`tasks.task.${action}`, { taskId: id });
+    const result = isRecord(response.result) ? response.result.task : null;
+
+    if (!isRecord(result) || String(result.id) !== id || Number(result.status) !== status) {
+      throw new TrackerError('tracker_rest_error', 'Портал не подтвердил новый статус задачи', 502);
+    }
+
+    return task(result, (await accountIdentity()).userId);
+  }
+
+  /**
+   * Старый API возвращает скалярный номер добавленного пункта, без объекта задачи.
+   * Родитель передаётся только при добавлении во вложенный список.
+   */
+  async function addChecklistItem(id: string, input: ChecklistItemInput): Promise<string> {
+    const response = await rest('task.checklistitem.add', {
+      TASKID: id,
+      FIELDS: {
+        TITLE: input.title,
+        ...(input.parentId !== undefined ? { PARENT_ID: input.parentId } : {}),
+      },
+    });
+    const itemId = response.result;
+
+    if ((typeof itemId !== 'string' && typeof itemId !== 'number')
+      || !Number.isSafeInteger(Number(itemId)) || Number(itemId) <= 0) {
+      throw new TrackerError('tracker_rest_error', 'Портал не вернул номер пункта', 502);
+    }
+
+    return String(itemId);
+  }
+
+  /**
+   * Отметка и удаление пункта старым API подтверждаются явным result=true.
+   * Отказы не повторяются: общий транспорт сохраняет текст ошибки портала.
+   */
+  async function confirmedMutation(method: string, fields: TaskData): Promise<boolean> {
+    const response = await rest(method, fields);
+
+    if (response.result !== true) {
+      throw new TrackerError('tracker_rest_error', 'Портал не подтвердил изменение задачи', 502);
+    }
+
+    return true;
+  }
+
+  /**
+   * Заголовок и отметка используют разные старые методы с теми же TASKID и ITEMID.
+   * false снимает отметку через renew, не теряясь при проверке наличия поля.
+   */
+  async function updateChecklistItem(id: string, itemId: string, input: ChecklistItemUpdate) {
+    const fields = { TASKID: id, ITEMID: itemId };
+
+    if (input.title !== undefined) {
+      await rest('task.checklistitem.update', {
+        ...fields,
+        FIELDS: { TITLE: input.title },
+      });
+    }
+
+    if (input.complete === true) {
+      await confirmedMutation('task.checklistitem.complete', fields);
+    } else if (input.complete === false) {
+      await rest('task.checklistitem.renew', fields);
+    }
+
+    return true;
+  }
+
   return {
     id: 'grigdesk-b24',
     capabilities: {
@@ -451,6 +526,10 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       delete: true,
       users: true,
       projects: true,
+      checklist: true,
+      tags: true,
+      review: true,
+      renew: true,
     },
     isConfigured: () => {
       try {
@@ -467,6 +546,19 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
     updateTask,
     completeTask,
     deleteTask,
+    renewTask: (id) => transitionTask(id, 'renew', 2),
+    approveTask: (id) => transitionTask(id, 'approve', 5),
+    disapproveTask: (id) => transitionTask(id, 'disapprove', 2),
+    addChecklistItem,
+    updateChecklistItem,
+    deleteChecklistItem: (id, itemId) => confirmedMutation('task.checklistitem.delete', {
+      TASKID: id,
+      ITEMID: itemId,
+    }),
+    updateTaskTags: (id, tags) => rest('task.item.update', {
+      TASKID: id,
+      FIELDS: { TAGS: tags.length ? tags : [''] },
+    }),
     addComment,
     testAuth: async () => {
       try {

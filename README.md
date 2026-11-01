@@ -81,3 +81,18 @@ timerElapsed — число секунд из timeSpentInLogs; null означа
 Page-ответ дополнен tags и subtasks. Теги читаются task.item.gettags с TASKID;
 любая ошибка даёт пустой список. Подзадачи читаются tasks.task.list с PARENT_ID,
 select ID,TITLE,STATUS и проецируются в id,title,statusText. Чтение комментариев прежнее.
+
+## Интерактивная карточка в 0.1.6
+
+Возможности checklist, tags, review и renew включены. Чек-лист использует старые
+`task.checklistitem.add/update/complete/renew/delete` с TASKID и ITEMID.
+Теги заменяются через `task.item.update` с FIELDS.TAGS; очистка отправляет `['']`,
+поскольку пустой массив теряется при urlencoded-сериализации. UF_TASK_TAGS не используется.
+
+Соисполнители и наблюдатели обновляются через `tasks.task.update`: ACCOMPLICES/AUDITORS
+с массивом положительных id, при очистке — строкой `''`. Принимаются также null и пустой
+массив. Поля accomplicesData/auditorsData приходят картой по id пользователя.
+
+Возобновление — `tasks.task.renew` (5 → 2), приёмка — `tasks.task.approve` (4 → 5),
+возврат — `tasks.task.disapprove` (4 → 2). Ответ должен содержать задачу с новым статусом.
+Отложение не поддерживается: портал отклоняет `tasks.task.defer`.

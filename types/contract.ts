@@ -7,6 +7,8 @@ import type {
 export type TaskData = Record<string, unknown>;
 export type TaskRef = { trackerId: string; id: string };
 export type TaskPresence = 'exists' | 'absent' | 'unknown';
+export type ChecklistItemInput = { title: string; parentId?: string };
+export type ChecklistItemUpdate = { title?: string; complete?: boolean };
 export type TrackerIdentity = { baseUrl: string; userId: string };
 
 export interface DriverManifest {
@@ -59,6 +61,12 @@ export interface TaskTracker {
   completeTask?(id: string): Promise<unknown>;
   deleteTask?(id: string): Promise<{ ok: boolean }>;
   renewTask?(id: string): Promise<unknown>;
+  addChecklistItem?(id: string, input: ChecklistItemInput): Promise<unknown>;
+  updateChecklistItem?(id: string, itemId: string, input: ChecklistItemUpdate): Promise<unknown>;
+  deleteChecklistItem?(id: string, itemId: string): Promise<unknown>;
+  updateTaskTags?(id: string, tags: string[]): Promise<unknown>;
+  approveTask?(id: string): Promise<unknown>;
+  disapproveTask?(id: string): Promise<unknown>;
   findUsers?(query: string): Promise<unknown>;
   listGroups?(): Promise<unknown>;
   dispose?(): Promise<void>;

@@ -12,6 +12,9 @@ export interface TrackerCapabilities {
   renew: boolean;
   users: boolean;
   projects: boolean;
+  checklist?: boolean;
+  tags?: boolean;
+  review?: boolean;
 }
 
 export type TrackerLabel = { key: string; params?: Record<string, string | number> } | { text: string };
@@ -101,4 +104,7 @@ export const NO_TRACKER_CAPABILITIES: TrackerCapabilities = {
   renew: false,
   users: false,
   projects: false,
+  checklist: false,
+  tags: false,
+  review: false,
 };
