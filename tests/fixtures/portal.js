@@ -158,12 +158,15 @@ export function fixture(t, {
       };
       const responses = {
         'user.current': { ID: '7' },
-        'tasks.task.list': { tasks: [task] },
+        'tasks.task.list': { tasks: fields.filter?.PARENT_ID ? [] : [task] },
         'tasks.task.get': { task },
         'tasks.task.add': { task },
         'tasks.task.update': { task },
         'tasks.task.complete': true,
         'tasks.task.delete': { task: true },
+        'task.item.gettags': [],
+        'tasks.task.starttimer': true,
+        'tasks.task.pausetimer': true,
         'task.commentitem.getlist': [],
         'task.commentitem.add': 101,
         'user.get': [{ ID: '7', NAME: 'Иван' }],

@@ -19,6 +19,8 @@ class CompletionDeniedError extends TrackerError {
 export function createStockTracker(host: TrackerHost, transport: typeof fetch = fetch): TaskTracker {
   let passwordAuth: { signature: string; value: PasswordAuth } | null = null;
   let identity: { signature: string; value: TrackerIdentity } | null = null;
+  const runningTimers = new Map<string, number>();
+  let timerCredentials = '';
 
   /**
    * Origin проверяется перед каждым обращением, включая смену реквизитов.
@@ -71,6 +73,11 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
   async function rest(method: string, fields: TaskData = {}): Promise<TaskData> {
     const creds = credentials();
     const signature = JSON.stringify(creds);
+
+    if (timerCredentials !== signature) {
+      runningTimers.clear();
+      timerCredentials = signature;
+    }
 
     if (passwordAuth?.signature !== signature) {
       passwordAuth = null;
@@ -155,14 +162,25 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
 
   /**
    * REST-поля переводятся в прежние имена карточки и доски.
-   * Отсутствующий таймер не изображается остановленным таймером.
+   * Состояние таймера известно только этой сессии; накопленные секунды возвращает портал.
    */
   function task(value: unknown, userId: unknown): TaskData {
     if (!isRecord(value) || !Number.isSafeInteger(Number(value.id)) || Number(value.id) <= 0) {
       throw new TrackerError('tracker_rest_error', 'Облако не вернуло номер задачи', 502);
     }
 
-    const state = describeStatus({ ...value, creatorId: value.createdBy }, userId);
+    const creatorId = isRecord(value.createdBy) ? value.createdBy.id : value.createdBy;
+    const responsibleId = value.responsibleId
+      ?? (isRecord(value.responsible) ? value.responsible.id : undefined);
+    const timerStartedAt = runningTimers.get(String(value.id));
+    const timerRunning = timerStartedAt !== undefined;
+    const timerElapsed = Number(value.timeSpentInLogs ?? 0);
+    const state = describeStatus({
+      ...value,
+      creatorId,
+      responsibleId,
+      timerRunning,
+    }, userId);
 
     return {
       ...value,
@@ -173,8 +191,10 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       title: String(value.title ?? ''),
       description: String(value.description ?? ''),
       status: Number(value.status),
-      responsibleId: Number(value.responsibleId),
-      createdBy: Number(value.createdBy),
+      responsibleId: Number(responsibleId),
+      timerRunning,
+      timerStartedAt: timerStartedAt ?? null,
+      timerElapsed: Number.isFinite(timerElapsed) ? timerElapsed : 0,
       groupId: Number(value.groupId) || null,
       priority: Number(value.priority) || 0,
     };
@@ -192,6 +212,8 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       ...value,
       group: typeof group === 'string' ? group : '',
       responsible: typeof responsible === 'string' ? responsible : '',
+      overdue: Boolean(value.deadline) && Date.parse(String(value.deadline)) < Date.now()
+        && Number(value.status) < 5,
     };
   }
 
@@ -199,7 +221,10 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
    * Все страницы каждой роли читаются до явного конца, без дублирования задач.
    * Облако само применяет права; фильтр роли не превращает все видимые задачи в личные.
    */
-  async function list(filter: TaskData): Promise<TaskData[]> {
+  async function list(filter: TaskData, select = [
+    'ID', 'TITLE', 'DESCRIPTION', 'STATUS', 'RESPONSIBLE_ID', 'CREATED_BY',
+    'GROUP_ID', 'PRIORITY', 'ACCOMPLICES', 'AUDITORS', 'DEADLINE', 'TIME_SPENT_IN_LOGS',
+  ]): Promise<TaskData[]> {
     const rows = new Map<number, TaskData>();
     const visited = new Set<number>();
     let start = 0;
@@ -210,8 +235,7 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       const response = await rest('tasks.task.list', {
         filter,
         order: { ID: 'ASC' },
-        select: ['ID', 'TITLE', 'DESCRIPTION', 'STATUS', 'RESPONSIBLE_ID', 'CREATED_BY',
-          'GROUP_ID', 'PRIORITY', 'ACCOMPLICES', 'AUDITORS', 'DEADLINE'],
+        select,
         start,
       });
       const result = isRecord(response.result) ? response.result : {};
@@ -240,6 +264,46 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
     } while (true);
 
     return [...rows.values()];
+  }
+
+  /**
+   * Только старый API возвращает теги: основная задача этого поля не содержит.
+   * Любая ошибка необязательного чтения скрывает теги, сохраняя остальной payload.
+   */
+  async function taskTags(id: string): Promise<string[]> {
+    try {
+      const response = await rest('task.item.gettags', { TASKID: id });
+
+      return Array.isArray(response.result)
+        ? response.result.filter((tag): tag is string => typeof tag === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Портал не отдаёт состояние «идёт», поэтому карта хранит только наши успешные старты.
+   * Пауза и останов используют pausetimer, который сам записывает время в elapsed-лог.
+   */
+  async function timer(action: string, id: string): Promise<{ ok: boolean }> {
+    if (!['start', 'pause', 'stop'].includes(action)) {
+      throw new TrackerError('tracker_bad_request', 'Неизвестное действие таймера');
+    }
+
+    const method = action === 'start' ? 'tasks.task.starttimer' : 'tasks.task.pausetimer';
+    const response = await rest(method, { taskId: id });
+
+    if (response.result === false) {
+      throw new TrackerError('tracker_rest_error', 'Портал не подтвердил действие таймера', 502);
+    }
+
+    if (action === 'start') {
+      runningTimers.set(String(id), Math.floor(Date.now() / 1000));
+    } else {
+      runningTimers.delete(String(id));
+    }
+
+    return { ok: true };
   }
 
   /**
@@ -281,7 +345,22 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       }
     } while (true);
 
-    return { attachments: [], comments: [...rows.values()] };
+    const [tags, children] = await Promise.all([
+      taskTags(id),
+      list({ PARENT_ID: id }, ['ID', 'TITLE', 'STATUS']),
+    ]);
+    const subtasks = children.map((child) => ({
+      id: child.id,
+      title: child.title,
+      statusText: child.statusText,
+    }));
+
+    return {
+      attachments: [],
+      comments: [...rows.values()],
+      tags,
+      subtasks,
+    };
   }
 
   /**
@@ -365,6 +444,7 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
     capabilities: {
       ...NO_TRACKER_CAPABILITIES,
       create: true,
+      timer: true,
       comments: true,
       editing: true,
       complete: true,
@@ -382,6 +462,7 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       }
     },
     accountIdentity,
+    timer,
     taskPageData,
     updateTask,
     completeTask,

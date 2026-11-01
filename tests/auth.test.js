@@ -16,7 +16,7 @@ for (const authMode of ['token', 'password']) {
     assert.equal((await driver.taskDetail('42')).id, 42);
     assert.deepEqual(await driver.createTask({ title: 'Новая' }), { ok: true, id: 42 });
     assert.deepEqual(await driver.updateTask('42', { title: 'Правка' }), { ok: true, id: 42 });
-    assert.deepEqual(await driver.taskPageData('42'), { attachments: [], comments: [] });
+    assert.deepEqual(await driver.taskPageData('42'), { attachments: [], comments: [], tags: [], subtasks: [] });
     assert.deepEqual(await driver.addComment('42', 'Комментарий'), { ok: true, commentId: 101 });
     assert.deepEqual(await driver.completeTask('42'), { ok: true });
     assert.deepEqual(await driver.findUsers('Иван'), [{ id: 7, name: 'Иван' }]);

@@ -1,4 +1,4 @@
-# Стоковый Битрикс24 0.1.4
+# Стоковый Битрикс24 0.1.5
 
 Внешний драйвер контракта 1 поддерживает два явно выбираемых способа подключения.
 В настройках доски укажите HTTPS origin портала в baseUrl и выберите authMode.
@@ -32,7 +32,7 @@
 
 Оба режима поддерживают чтение, создание, правку и завершение задач, комментарии,
 пользователей и проекты. capabilities.comments и capabilities.editing включены.
-Таймер, вложения и виджеты отключены через capabilities.
+Таймер включён через capabilities.timer; вложения и виджеты отключены.
 Ядро не импортируется: types содержит локальный снимок общего контракта.
 
 Списки задач для доски преобразуют REST-объекты `group` и `responsible` в строковые
@@ -72,9 +72,7 @@ RESPONSIBLE_ID и DEADLINE. Также принимаются groupId и priorit
 формой ядра. Возвращается `{ ok: true, id }` после подтверждения REST.
 Отсутствующие поля и undefined не отправляются; пустое описание очищает описание,
 deadline=null или пустая строка снимает срок. Никакого слияния с устаревшей карточкой нет.
-Доступность срока в интерфейсе зависит от полей, передаваемых host: текущая HTTP-валидация
-ядра допускает title, description, responsibleId, groupId и priority, но не deadline.
-Пакет поддерживает deadline напрямую; ядро в рамках этого обновления не меняется.
+Форма ядра передаёт изменённый deadline как ISO-строку или null через HTTP-валидацию.
 
 Все три операции используют существующий транспорт: token передаёт auth в POST-теле,
 password — cookie-сессию и sessid. В password разрешён только один повтор после явного
@@ -90,3 +88,18 @@ password — cookie-сессию и sessid. В password разрешён тол�
 неповторение мутаций при сбоях и ротация сессии при добавлении комментария.
 
 [comments-list]: https://apidocs.bitrix24.ru/api-reference/tasks/comment-item/task-comment-item-get-list.html
+
+## Карточка и таймер
+
+Версия 0.1.5 сохраняет REST-поля деталей: deadline с часовым смещением,
+creator/responsible с name и icon, участников, checklist-карту, parentId и replicate.
+Списки выбирают TIME_SPENT_IN_LOGS и вычисляют overdue по сроку и статусу меньше 5.
+
+Таймер start вызывает tasks.task.starttimer, pause и stop — tasks.task.pausetimer.
+Состояние timerRunning и Unix-старт timerStartedAt известны только в сессии драйвера.
+Портал не возвращает состояние «идёт»; перезапуск и смена реквизитов очищают карту.
+timerElapsed — число секунд из timeSpentInLogs; null означает 0.
+
+Page-ответ дополнен tags и subtasks. Теги читаются task.item.gettags с TASKID;
+любая ошибка даёт пустой список. Подзадачи читаются tasks.task.list с PARENT_ID,
+select ID,TITLE,STATUS и проецируются в id,title,statusText. Чтение комментариев прежнее.

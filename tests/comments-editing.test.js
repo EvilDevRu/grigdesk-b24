@@ -51,6 +51,8 @@ for (const authMode of ['token', 'password']) {
 
     assert.deepEqual(page, {
       attachments: [],
+      tags: [],
+      subtasks: [],
       comments: [{
         mid: 101,
         authorId: 7,
@@ -86,7 +88,7 @@ for (const authMode of ['token', 'password']) {
   test(`${authMode}: пустое обсуждение завершает чтение одной страницей`, async (t) => {
     const { driver, calls } = fixture(t, { authMode });
 
-    assert.deepEqual(await driver.taskPageData('42'), { attachments: [], comments: [] });
+    assert.deepEqual(await driver.taskPageData('42'), { attachments: [], comments: [], tags: [], subtasks: [] });
     assert.equal(requests(calls, LIST).length, 1);
   });
 
