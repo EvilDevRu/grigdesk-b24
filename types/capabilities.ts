@@ -8,6 +8,7 @@ export interface TrackerCapabilities {
   widgets: boolean;
   editing: boolean;
   complete: boolean;
+  delete: boolean;
   renew: boolean;
   users: boolean;
   projects: boolean;
@@ -96,6 +97,7 @@ export const NO_TRACKER_CAPABILITIES: TrackerCapabilities = {
   widgets: false,
   editing: false,
   complete: false,
+  delete: false,
   renew: false,
   users: false,
   projects: false,

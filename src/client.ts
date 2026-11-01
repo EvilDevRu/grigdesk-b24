@@ -7,6 +7,11 @@ import { taskUpdateFields } from './taskFields.ts';
 import { TrackerError } from '../types/contract.ts';
 import type { TaskData, TaskTracker, TrackerHost, TrackerIdentity } from '../types/contract.ts';
 
+// Только явный отказ нового модуля разрешает запасной способ завершения.
+// Исходная ошибка сохраняет обычную редактированную диагностику REST.
+class CompletionDeniedError extends TrackerError {
+}
+
 /**
  * REST использует явно выбранный токен либо самостоятельную сессию портала.
  * Реквизиты другого режима не участвуют в запросах и кеше идентичности.
@@ -98,7 +103,12 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
         const denied = /^(ACCESS_DENIED|ERROR_ACCESS_DENIED|insufficient_scope)$/iu.test(String(body.error))
           || response.status === 403;
 
-        throw new TrackerError(missing ? 'task_not_found' : 'tracker_rest_error', message,
+        const completionDenied = method === 'tasks.task.complete'
+          && [400, 403].includes(response.status)
+          && (String(body.error) === '0' || /Действие над задачей не разрешено/iu.test(raw));
+        const Failure = completionDenied ? CompletionDeniedError : TrackerError;
+
+        throw new Failure(missing ? 'task_not_found' : 'tracker_rest_error', message,
           missing ? 404 : denied ? 403 : 502);
       }
 
@@ -171,6 +181,21 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
   }
 
   /**
+   * Список задач содержит строковые подписи проекта и исполнителя для доски.
+   * REST возвращает их объектами; детали карточки сохраняют исходные объекты отдельно.
+   */
+  function boardTask(value: TaskData): TaskData {
+    const group = isRecord(value.group) ? value.group.name : value.group;
+    const responsible = isRecord(value.responsible) ? value.responsible.name : value.responsible;
+
+    return {
+      ...value,
+      group: typeof group === 'string' ? group : '',
+      responsible: typeof responsible === 'string' ? responsible : '',
+    };
+  }
+
+  /**
    * Все страницы каждой роли читаются до явного конца, без дублирования задач.
    * Облако само применяет права; фильтр роли не превращает все видимые задачи в личные.
    */
@@ -196,7 +221,7 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       }
 
       for (const raw of result.tasks) {
-        const mapped = task(raw, (await accountIdentity()).userId);
+        const mapped = boardTask(task(raw, (await accountIdentity()).userId));
 
         rows.set(Number(mapped.id), mapped);
       }
@@ -295,6 +320,46 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
     return { ok: true, commentId };
   }
 
+  /**
+   * Новый модуль иногда запрещает complete даже исполнителю с правом менять статус.
+   * Единственный запасной запрос завершает через STATUS=5; его отказ сохраняет исходную ошибку.
+   */
+  async function completeTask(id: string): Promise<{ ok: boolean }> {
+    try {
+      await rest('tasks.task.complete', { taskId: id });
+    } catch (error) {
+      if (!(error instanceof CompletionDeniedError)) {
+        throw error;
+      }
+
+      try {
+        const response = await rest('tasks.task.update', { taskId: id, fields: { STATUS: 5 } });
+
+        if (response.result !== true && (!isRecord(response.result) || !isRecord(response.result.task))) {
+          throw new TrackerError('tracker_rest_error', 'Портал не подтвердил завершение задачи', 502);
+        }
+      } catch {
+        throw error;
+      }
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Удаление подтверждается только явным result.task=true от портала.
+   * Некорректный результат не считается успешной необратимой операцией.
+   */
+  async function deleteTask(id: string): Promise<{ ok: boolean }> {
+    const response = await rest('tasks.task.delete', { taskId: id });
+
+    if (!isRecord(response.result) || response.result.task !== true) {
+      throw new TrackerError('tracker_rest_error', 'Портал не подтвердил удаление задачи', 502);
+    }
+
+    return { ok: true };
+  }
+
   return {
     id: 'grigdesk-b24',
     capabilities: {
@@ -303,6 +368,7 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       comments: true,
       editing: true,
       complete: true,
+      delete: true,
       users: true,
       projects: true,
     },
@@ -318,6 +384,8 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
     accountIdentity,
     taskPageData,
     updateTask,
+    completeTask,
+    deleteTask,
     addComment,
     testAuth: async () => {
       try {
@@ -384,11 +452,6 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       const created = task(isRecord(response.result) ? response.result.task : null, null);
 
       return { ok: true, id: created.id };
-    },
-    completeTask: async (id) => {
-      await rest('tasks.task.complete', { taskId: id });
-
-      return { ok: true };
     },
     findUsers: async (query) => {
       const response = await rest('user.get', { FILTER: { FIND: query } });

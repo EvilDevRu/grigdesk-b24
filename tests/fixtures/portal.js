@@ -25,6 +25,7 @@ export function fixture(t, {
     restMethod: null,
     restStatus: 200,
     restDescription: null,
+    completeDenied: false,
     challenge,
     redirect,
   };
@@ -126,6 +127,13 @@ export function fixture(t, {
 
       const method = path.slice('/rest/'.length);
 
+      if (state.completeDenied && method === 'tasks.task.complete') {
+        return Response.json({
+          error: '0',
+          error_description: 'Действие над задачей не разрешено',
+        }, { status: 400 });
+      }
+
       if (state.restError && (!state.restMethod || state.restMethod === method)) {
         return Response.json({
           error: state.restError,
@@ -155,6 +163,7 @@ export function fixture(t, {
         'tasks.task.add': { task },
         'tasks.task.update': { task },
         'tasks.task.complete': true,
+        'tasks.task.delete': { task: true },
         'task.commentitem.getlist': [],
         'task.commentitem.add': 101,
         'user.get': [{ ID: '7', NAME: 'Иван' }],

@@ -57,6 +57,7 @@ export interface TaskTracker {
   addComment?(id: string, text: unknown): Promise<unknown>;
   timer?(action: string, id: string): Promise<unknown>;
   completeTask?(id: string): Promise<unknown>;
+  deleteTask?(id: string): Promise<{ ok: boolean }>;
   renewTask?(id: string): Promise<unknown>;
   findUsers?(query: string): Promise<unknown>;
   listGroups?(): Promise<unknown>;
