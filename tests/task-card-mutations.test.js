@@ -153,7 +153,10 @@ test('Неверные участники отклоняются до порта
 
   for (const key of ['accomplices', 'auditors']) {
     for (const value of ['7', {}, [0], [-1], [1.2], [true], [null], ['7x']]) {
-      await assert.rejects(driver.updateTask('42', { [key]: value }), { code: 'tracker_bad_request' });
+      const code = Array.isArray(value) && value.includes('7x') ? 'b24_bad_request'
+        : 'tracker_bad_request';
+
+      await assert.rejects(driver.updateTask('42', { [key]: value }), { code });
     }
   }
 

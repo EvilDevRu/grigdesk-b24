@@ -14,6 +14,27 @@ const FIELD_NAMES: Record<string, string> = {
 };
 
 /**
+ * Ядро допускает непрозрачные accountId других трекеров, но REST Б24 требует номер портала.
+ * Отказ происходит до сети и касается только пользовательских полей, не project/groupId.
+ */
+export function assertPortalUserIds(input: unknown): void {
+  if (!isRecord(input)) {
+    return;
+  }
+
+  for (const key of ['responsibleId', 'accomplices', 'auditors']) {
+    const value = input[key];
+    const ids = Array.isArray(value) ? value : [value];
+
+    for (const id of ids) {
+      if (typeof id === 'string' && !(key !== 'responsibleId' && id === '') && !/^\d+$/u.test(id)) {
+        throw new TrackerError('b24_bad_request', `${key}: нужен числовой id портала`);
+      }
+    }
+  }
+}
+
+/**
  * Проверяет частичное обновление до сети и переводит только заданные поля в REST.
  * Пустое описание и снятие срока значимы; пропущенные поля не получают значений по умолчанию.
  */
@@ -21,6 +42,8 @@ export function taskUpdateFields(input: unknown): TaskData {
   if (!isRecord(input)) {
     throw new TrackerError('tracker_bad_request', 'Поля задачи должны быть объектом');
   }
+
+  assertPortalUserIds(input);
 
   const fields: TaskData = {};
 

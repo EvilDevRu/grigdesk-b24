@@ -3,7 +3,7 @@ import { PasswordAuth } from './auth.ts';
 import { comment } from './comments.ts';
 import { isRecord, redactSecrets } from './objects.ts';
 import { describeStatus } from './status.ts';
-import { taskUpdateFields } from './taskFields.ts';
+import { assertPortalUserIds, taskUpdateFields } from './taskFields.ts';
 import { TrackerError } from '../types/contract.ts';
 import type { ChecklistItemInput, ChecklistItemUpdate } from '../types/contract.ts';
 import type { TaskData, TaskTracker, TrackerHost, TrackerIdentity } from '../types/contract.ts';
@@ -607,6 +607,8 @@ export function createStockTracker(host: TrackerHost, transport: typeof fetch = 
       }
     },
     createTask: async (input) => {
+      assertPortalUserIds(input);
+
       const fields: TaskData = { TITLE: input.title };
       const names = {
         description: 'DESCRIPTION',
